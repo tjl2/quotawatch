@@ -1,0 +1,26 @@
+# mail.user
+# KEY TO OPTIONAL VARIABLES:
+# --USER--     = the account name of the offending user
+# --DOMAIN--   = this will become the domain name of the relevant over-quota user
+# --QSIZE--    = this will become the value of the user's disk quota (in megabytes)
+# --QUSAGEMB-- = this will be displayed as the current usage (in megabytes)
+# --QUSAGEPC-- = this is the current usage (percentage value)
+# --QAVAILMB-- = this will display the remaining disk space available to the user (in megabytes)
+# --QAVAIL--   = same as above
+# --QAVAILPC-- = the remaining quota available (percentage value)
+# --COMPANY--  = this will be displayed as your company name (defined in quotawatch.conf)
+
+# HEADERS SECTION
+--SUBJECT =
+--MAILFROM =
+
+# WRITE YOUR EMAIL MESSAGE BELOW THIS LINE
+This message has been sent to notify you of your disk quota usage.
+
+Your user account, '--USER--', on --DOMAIN--, has a disk quota limit of --QSIZE--MB. You are currently using --QUSAGEMB--MB (--QUSAGEPC--%) of this quota and have --QAVAIL--MB left.
+If your disk quota is filled, you cannot write any more data to the disk and this could result in you being unable to receive email.
+You may need to remove some files from your home directory or delete old emails from your webmail account to correct this problem.
+Alternatively, you can contact your site administrator and request more disk space.
+
+Thank you,
+--COMPANY-- Support

@@ -1,0 +1,108 @@
+QUOTAWATCH README
+=================
+The quotawatch script was written to enable one user to be made aware of
+disk quota usage on an Ensim server. For some reason, this functionality is
+not included in Ensim.
+
+Using the same Ensim scripts that are used to display usage info in the
+various control panel screens, quotawatch recursively checks the disk quota
+of each site and each site's users on the server and displays any quotas that
+are over a specified trigger value (a default of 90% can be used). As well
+as displaying results on screen, quotawatch can send the results via email to
+a specified address.
+
+Quotawatch can also be told to notify any resellers, users and site administrators
+if they, or their site, are over the trigger value. The emails that are sent to
+users and site administrators are customisable, and can be changed by editing the
+mail.user and mail.siteadmin files in /etc/quotawatch/.
+
+INSTALLATION
+============
+To install or upgrade quotawatch, simply run the installquotawatch script as root.
+The install script will then ask you if you wish to set up an hourly cron job to
+automatically run quotawatch. If you answer yes, you will then be asked the following
+questions:
+1) Quotawatch triggers an alert when disk usage is at or over 90% of quota by default.
+   Would you like to specify a different (custom) value to trigger alerts?
+2) Quotawatch can notify users and site administrators when they have triggered
+   a disk quota alert.
+   Do you want to enable user notification in your hourly quotawatch run?
+3) Quotawatch can notify resellers when any of their associated sites or users trigger
+   an alert.
+   Do you want to enable reseller notification in your hourly quotawatch run?
+   Please enter your hosting company name (to be displayed on notification emails)
+4) You can enable logging in your cron script to stop alerts being sent more than
+   once per day for each over-quota account. Without this option, you will be
+   notified every hour for an over-quota alert that remains unfixed.
+   Do you wish to enable alert-logging in your hourly quotawatch run?
+5) You can set quotawatch to only tell you about site quota alerts, not user quota
+   alerts, as these are more important for server administrators.
+   Do you wish to ignore user quota alerts?
+6) You can provide one or more email addresses for quotawatch to send alert results
+   to.
+   If you are providing more than one email address, separate each one with a comma.
+
+If you answer no to the cron job question, quotawatch will be installed, but without
+the script being added that will enable automatic hourly execution.
+
+UPGRADING
+=========
+If you are upgrading quotawatch from a previous version, just run the installation
+script as usual. It will not overwrite your /etc/quotawatch/mail.* files, but create
+new ones with a '.version' extension, where 'version' is the current version number.
+If an existing quotawatch.cron file is found, you will not be asked the installation
+questions. Depending on the new version of quotawatch, your quotawatch.conf file may
+need to be overwritten or manually edited. You will be told if this is the case.
+
+IMPORTANT NOTES:
+[1] quotawatch can be passed multiple email addresses to send results
+    to. Each address needs to be separated by A COMMA AND ONLY A COMMA (no spaces).
+    The installation script doesn't do any validation of the provided emails other
+    than looking for an '@' sign; so you could quite easily create an invalid email
+    string.
+
+[2] be careful when specifying custom trigger values when using user
+    notification! If you were to use a trigger of 0% quota usage and pass the
+    --notify or -n option, you would email ALL users on the server warning them
+    that they are using over 0% of their disk quota! Be especially careful that
+    such a set up does not end up in your /etc/cron.hourly/quotawatch.cron file;
+    within a few hours, if you are not using the --log option, you will have
+    irritated the majority of your customers!
+    You should always keep the quotawatch.cron trigger value fairly high (at least
+    80%) to avoid sending unnecessary warnings. You have been warned.
+
+The installation script will add the quotawatch script to /usr/local/sbin and
+will add configuration files and mail templates to /etc/quotawatch. It will
+also add a cron job as /etc/cron.hourly/quotawatch.cron if you answer yes to
+the first question.
+
+For more information on using quotawatch after installation, simply run:
+  quotawatch --help
+or
+  quotawatch -h
+or...
+There are now man pages for quotawatch in man sections 8 and 5. Use 'man quotawatch'
+for detailed information about quotawatch. Use 'man 5 quotawatch' for info regarding
+quotawatch's associated config and email files.
+
+Send bug reports and/or questions to quotawatch@1steasy.com or quotawatch@tjl2.com
+
+=================
+CHANGELOG SUMMARY
+
+1.6.0 [17 January 2005]
+- Modified the server admin alert email so that it doesn't talk
+  about 'trigger values'. Just quotes the percentage of disk quota
+  use now.
+- [NEW] added the facility to only list the SITES that are over
+  quota in the main quotawatch output. This also affects the
+  reseller notification email and the server admin email. This
+  ensures we are only alerted when a site could have trouble.
+- updated the man pages to include information about reseller
+  notification and site-only warnings
+- [NEW] improved the installation script to ask for the hosting
+  company name, if user notification is enabled.
+
+=================
+quotawatch
+Tim Littlemore 2004

@@ -1,0 +1,26 @@
+# mail.siteadmin
+# KEY TO OPTIONAL VARIABLES:
+# --USER--     = the account name of the offending user
+# --DOMAIN--   = the domain name of the relevant over-quota user
+# --QSIZE--    = the value of the user's disk quota (in megabytes)
+# --QUSAGEMB-- = this will be displayed as the current usage (in megabytes)
+# --QUSAGEPC-- = this is the current usage (percentage value)
+# --QAVAILMB-- = this will display the remaining disk space available to the user (in megabytes)
+# --QAVAIL--   = same as above
+# --QAVAILPC-- = the remaing quota available (percentage value)
+# --COMPANY--  = this will be displayed as your company name (defined in quotawatch.conf)
+
+# HEADERS SECTION
+--SUBJECT =
+--MAILFROM =
+
+# WRITE YOUR EMAIL MESSAGE BELOW THIS LINE
+This message has been sent to notify you of your site's disk quota usage.
+
+Your site, --DOMAIN--, has a disk quota limit of --QSIZE--MB. You are currently using --QUSAGEMB--MB (--QUSAGEPC--%) of this quota and have --QAVAIL--MB left.
+If your disk quota is filled, no more data can be written to the disk.
+You may need to remove some files from your website or ask site users to delete emails from their webmail accounts to correct this problem.
+Alternatively, you can contact support and request more disk space.
+
+Thank you,
+--COMPANY-- Support

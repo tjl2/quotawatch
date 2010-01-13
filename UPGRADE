@@ -1,0 +1,55 @@
+QUOTAWATCH UPGRADE NOTES
+========================
+Note: the steps outlined in this file are only applicable
+if you are upgrading quotawatch. New installations do not
+require these steps.
+
+Quotawatch 1.4.2 and upwards now takes custom email subjects
+and mail-from settings from each mail.siteadmin or mail.user
+file.
+
+Quotawatch 1.5.0 and upwards now has a reseller notification
+ability. This is enabled by using the -r or --reseller switch
+on your quotawatch command. You will need to modify your
+/etc/cron.hourly/quotawatch.cron script to include this switch
+if you want to turn this feature on.
+
+Quotawatch 1.6.0 and upwards now has a site-only warning switch.
+This is enabled by using the -s or --site-only switch on your
+quotawatch command. You will need to modify your
+/etc/cron.hourly/quotawatch.cron script to include this switch
+if you want to turn this feature on.
+
+The following settings in quotawatch.conf are now no
+longer used:
+MailFrom
+NotificationSubject
+
+Instead, these should be set in both mail.siteadmin and
+mail.user.
+If you have not customised the email bodies in these files,
+you can safely rename mail.user.1.4.2 and mail.siteadmin.1.4.2
+to mail.user and mail.siteadmin, respectively.
+Alternatively, if you have changed the contents of these files,
+just add the following lines at the top of the file to change
+the subject and mailfrom settings from default values:
+
+--SUBJECT = Your Modified Subject
+--MAILFROM = Your Modified Email <you@yours.com>
+
+You can now use the mail variables in these settings, for added
+flexibility (e.g.: you could set your MAILFROM to use the
+--COMPANY-- variable)
+
+If these lines are not present in the mail files, or present,
+but not set, then quotawatch will use defaults.
+
+You can also overwrite your quotawatch.conf file with the
+quotawatch.conf.1.x.x file and just amend the CompanyName if you
+wish.
+
+QUOTAWATCH WILL STILL RUN, WITHOUT ERROR, EVEN IF YOU MAKE NONE OF
+THESE CHANGES.
+
+Tim Littlemore
+quotawatch@tjl2.com

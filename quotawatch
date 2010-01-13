@@ -1,0 +1,821 @@
+#!/usr/bin/php -q
+<?php
+/*
++----------------------------------------------------------------------+
+|                            quotawatch                                |
++----------------------------------------------------------------------+
+| A PHP script that checks the quotas for all sites and their users on |
+| an Ensim server. The script uses a combination of the 'sitelookup'   |
+| and 'quota_report' programs, then displays, or optionally, emails a  |
+| report of sites getting close to or over their disk quota.           |
++----------------------------------------------------------------------+
+| 17/01/2005                                                           |
+| Author: tim.littlemore@tjl2.com (send bug reports and/or questions   |
+| to quotawatch@tjl2.com)                                              |
++----------------------------------------------------------------------+
+| Copyright 2004, Tim Littlemore                                       |
+|                                                                      |
+| This program is free software; you can redistribute it and/or modify |
+| it under the terms of the GNU General Public License as published by |
+| the Free Software Foundation; either version 2 of the License, or    |
+| (at your option) any later version.                                  |
+|                                                                      |
+| This program is distributed in the hope that it will be useful, but  |
+| WITHOUT ANY WARRANTY; without even the implied warranty of           |
+| MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU     |
+| General Public License for more details.                             |
+| You should have received a copy of the GNU General Public License    |
+| along with this program; if not, write to the                        |
+| Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,  |
+| MA, 02111-1307, USA                                                  |
++----------------------------------------------------------------------+
+*/
+
+$version = '1.6.1';
+
+// assemble the usage instructions
+$usage = "Usage: quotawatch [OPTIONS] [EMAIL_ADDRESS]\n\n"
+."Where OPTIONS can be any of the following:\n"
+."-t, --trigger\toptionally provide a percentage that will trigger an alert\n"
+."\t\tIf a trigger is provided, it must be an integer between 0 and 100.\n"
+."\t\tIf a trigger is not specified, a default of 90% is used\n\n"
+."-l, --log\tuse alert-logging functionality to prevent continuous alerts\n"
+."\t\tLogging is useful when quotawatch is being called by a cron job.\n\n"
+."-n, --notify\toptionally notify (via email) any users or site admins who are over the specified trigger value of their disk quota\n"
+."\t\tIf a whole site is over the trigger value, the site admin user will be notified\n\n"
+."-r, --reseller\tnotify resellers by email when sites and users are at or over the trigger\n\n"
+."-s, --site-only\tdo not output an alert for USERS who are at or over the trigger, only SITES\n\n"
+."-h, --help\tdisplay this usage text*\n\n"
+."-v, --version\tdisplay the version number and exit*\n\n"
+."EMAIL_ADDRESS\toptionally provide email address(es) to send quotawatch output to.\n"
+."\t\tMultiple addresses can be used, separated by commas\n\n"
+."* These options cannot be used with other options\n\n"
+."Examples:\n"
+."To email admin@domain.com when a site/user is using 75% or more of their quota:\n\tquotawatch --trigger 75 admin@domain.com\n\n"
+."To email admin@domain.com and support@domain.co.uk when a site/user is over the default quota:\n\tquotawatch admin@domain.com,support@domain.co.uk\n\n"
+."To view all disk quotas on screen and notify all users who are over 95% of their quota:\n\tquotawatch --notify -t 95\n\n";
+
+
+if( $argc > 1 ) {
+  // look for the --help or -h option:
+  while( list( $key, $val ) = each( $argv ) ) {
+    if( $val == "--help" || $val == "-h" ) {
+      die( $usage );
+    }
+  }
+  reset( $argv );
+
+  // look for the --version or -v option:
+  while( list( $key, $val ) = each( $argv ) ) {
+    if( $val == "--version" || $val == "-v" ) {
+      die( "quotawatch " . $version . "\n" );
+    }
+  }
+  reset( $argv );
+
+  // look for the trigger or notify arguments
+  for( $a = 1; $a < sizeof( $argv ); $a++ ) {
+    if( $argv[$a] == "-t" || $argv[$a] == "--trigger" ) {
+      // this is the trigger argument, the next argument must be a value between 0 & 100
+      $trigger = $argv[$a + 1];
+      $triggerType = gettype( $trigger );
+      // check that the trigger is a number
+      if( !is_numeric( $trigger ) ) {
+        die( "Invalid trigger value!\n\n" . $usage );
+      }
+      else if( $trigger >= 0 && $trigger <= 100 ) {
+        // set the trigger value to this
+        $warningTrigger = $trigger;
+        settype( $warningTrigger, 'integer' );
+        // increment the counter too, so we ignore our trigger value
+        $a++;
+      }
+      else {
+        // user-defined trigger value is not a value between 0 & 100
+        die( "Invalid trigger value!\n\n" . $usage );
+      }
+    }
+    else if( ereg( "@", $argv[$a] ) ) {
+      // if there is an @ sign, this argument must be the email address(es)
+      $reportingMethod = 'email';
+      $mailTo = $argv[$a];
+    }
+    else if( $argv[$a] == "-n" || $argv[$a] == "--notify" ) {
+      // if we find -n or --notify, then individual users should be notified
+      $notifyOffenders = TRUE;
+    }
+    else if( $argv[$a] == "-l" || $argv[$a] == "--log" ) {
+      // if we are sent -l or --log, we need to enable our logging functionality
+      $alertLog = TRUE;
+      // get the day of the year and current timestamp
+      $doy = date( 'z' ) + 1;
+      $tstmp = date( 'U' );
+    }
+    else if( $argv[$a] == "-r" || $argv[$a] == "--reseller" ) {
+      // if we are sent -r or --reseller, we need to enable reseller notification
+      $notifyResellers = TRUE;
+    }
+    else if( $argv[$a] == "-s" || $argv[$a] == "--site-only" ) {
+    	// if we are sent -s or --site-only, we only want to output (or notify the server admin) of site quota alerts
+    	$siteOnly = TRUE;
+    }
+    else {
+      // they must have sent something else in
+      die( "Invalid option: '" . $argv[$a] . "'\n" . $usage );
+    }
+  }
+}
+
+// pull in the config file
+if( file_exists( "/etc/quotawatch/quotawatch.conf" ) ) {
+  exec( '/bin/cat /etc/quotawatch/quotawatch.conf', $settings );
+  // set up an array to hold the settings (initialise with empty strings)
+  $conf = array( 'AlertLogPath' => '', 'CompanyName' => '' );
+  // pull out everything that isn't commented with #, and dump into $conf array
+  while( list( $key, $val ) = each( $settings ) ) {
+    if( !ereg( "^#", $val ) ) {
+      @list( $configLine, $comment ) = explode( '#', $val );
+      @list( $option, $value ) = explode( '=', $configLine );
+      $conf[trim( $option )] = trim( $value );
+    }
+  }
+
+  reset( $conf );
+
+  // if we come out of this loop, and AlertLogPath is empty, set it now
+  if( $conf['AlertLogPath'] == '' ) {
+    $conf['AlertLogPath'] = "/var/lib/quotawatch";
+    // define the alertLog location
+    define( 'ALERT_LOG', $conf['AlertLogPath'] . '/alerted' );
+  }
+  else {
+    define( 'ALERT_LOG', $conf['AlertLogPath'] . '/alerted' );
+  }
+
+  // define our CompanyName
+  define( 'COMPANY_NAME', $conf['CompanyName'] );
+}
+else {
+  // we couldn't find/open quotawatch.conf
+  $qwError = "WARNING - Could not open the quotawatch config file, user/site admin notification emails may not display correctly.\n";
+  // set the alert-log path, to save any trouble later
+  $conf['AlertLogPath'] = "/var/lib/quotawatch";
+  // define the alertLog location
+  define( 'ALERT_LOG', $conf['AlertLogPath'] . '/alerted' );
+}
+
+
+
+// store the server name
+$server = exec( '/bin/hostname' );
+
+// after the above loop, if warningTrigger is not set, we can assume it wasn't provided
+if( !isset( $warningTrigger ) ) {
+  $warningTrigger = 90; // set the warning trigger to the default 90% value
+}
+
+// if the reporting method has not been set above, assume no email was provided
+if( !isset( $reportingMethod ) ) {
+  $reportingMethod = 'stdout';
+}
+
+// if notifyOffenders hasn't been set above, set it to FALSE here
+if( !isset( $notifyOffenders ) ) {
+  $notifyOffenders = FALSE;
+}
+
+// if notifyResellers hasn't been set above, set it to FALSE here
+if( !isset( $notifyResellers ) ) {
+  $notifyResellers = FALSE;
+}
+
+// if siteOnly hasn't been set above, set it to FALSE here
+if( !isset( $siteOnly ) ) {
+  $siteOnly = FALSE;
+}
+
+// if alertLog hasn't been set above, set it to FALSE here
+if( !isset( $alertLog ) ) {
+  $alertLog = FALSE;
+}
+
+// populate our resellers array, if needed
+if( $notifyResellers ) {
+  $resellers = getResellers( $server, $warningTrigger );
+  // if $resellers is false, we don't have any resellers, turn off reseller notification
+  if( $resellers == FALSE ) {
+    $notifyResellers = FALSE;
+  }
+}
+
+// start the message that will be sent out if any sites/users are over quota:
+$warningMsg = "The following site(s)/user(s) on $server are at or over $warningTrigger% of their disk quota:\n\n";
+// set a flag to let us know whether to issue a warning - obviously starts off as FALSE
+$quotaWarnings = FALSE;
+
+// use sitelookup to get domain info for all sites
+exec( '/usr/local/bin/sitelookup -a', $sites );
+
+
+while( list( $key, $val ) = each( $sites ) ) {
+  // set $siteAlerted to FALSE at the start of this loop (for logging functionality)
+  $siteAlerted = FALSE;
+
+  // we need the domain info from the sitelookup output string
+  $siteStrings = explode( ',', $val );
+
+  // siteStrings array has the following elements:
+  // [0] => domain, [1] => group name, [3] => virtual filesystem path, [4] => site admin username
+
+  // check site quotas first
+  $gid = findGID( $siteStrings[1] );
+  $siteResult = checkSiteQuota( $gid );
+  if( $siteResult['quota_enabled'] ) {
+    // check how much quota is used
+    $usage = $siteResult['usage'];
+    // convert to a float for checking purposes
+    settype( $usage, 'float' );
+    if( $usage > $warningTrigger ) { // append to the warning message if this percentage is used (90% should be a good figure)
+      // are we logging alerts?
+      if( $alertLog ) {
+        // see if this site is in the log for today, with a quota <= the current one
+        if( !$siteAlerted = isInLog( $doy, $tstmp, $siteStrings[4] . "@" . $siteStrings[0], $siteResult['quota'] ) ) {
+          // write them to the log and display/send alert
+          addToLog( $doy, $tstmp, $siteStrings[4] . "@" . $siteStrings[0], $siteResult['quota'] );
+          // set our flag so that we know to issue a warning
+          $quotaWarnings = TRUE;
+          // append the info to the warning message
+          $warningMsg .= "SITE QUOTA WARNING - " . $siteStrings[0] . "\n\tQuota limit: " . $siteResult['quota'] . "MB\n\tQuota usage: "
+          . $siteResult['usagemb'] . "MB (". $siteResult['usage'] . "%)\n\tAvailable disk space: " . $siteResult['available'] . "MB\n\n";
+          // are we notifying users?
+          if( $notifyOffenders ) {
+            // notify the site admin if a site is over the trigger
+            mailOffender( 'siteadmin', $siteStrings[4], $siteStrings[0], $siteResult['quota'], $siteResult['usagemb'], $siteResult['usage'], $siteResult['available'], $siteResult['availablepc'] );
+          }
+          if( $notifyResellers ) {
+            // find the reseller for this site
+            $resellerId = getSiteReseller( ereg_replace( "^admin", "", $siteStrings[1] ) ); // sending in the number from the group name
+            // start to assemble the contents of an email
+            $resellers[$resellerId]['msg'] .= "SITE QUOTA WARNING - " . $siteStrings[0] . "\n\tQuota limit: " . $siteResult['quota'] . "MB\n\tQuota usage: "
+            . $siteResult['usagemb'] . "MB (". $siteResult['usage'] . "%)\n\tAvailable disk space: " . $siteResult['available'] . "MB\n\n";
+          }
+        }
+        // the user was already in the log, we won't alert them again
+      }
+      else { // we aren't logging alerts, carry on as usual
+        // set our flag so that we know to issue a warning
+        $quotaWarnings = TRUE;
+        // append the info to the warning message
+        $warningMsg .= "SITE QUOTA WARNING - " . $siteStrings[0] . "\n\tQuota limit: " . $siteResult['quota'] . "MB\n\tQuota usage: "
+        . $siteResult['usagemb'] . "MB (". $siteResult['usage'] . "%)\n\tAvailable disk space: " . $siteResult['available'] . "MB\n\n";
+        // are we notifying users?
+        if( $notifyOffenders ) {
+          // notify the site admin if a site is over the trigger
+          mailOffender( 'siteadmin', $siteStrings[4], $siteStrings[0], $siteResult['quota'], $siteResult['usagemb'], $siteResult['usage'], $siteResult['available'], $siteResult['availablepc'] );
+        }
+        if( $notifyResellers ) {
+          // find the reseller for this site
+          $resellerId = getSiteReseller( ereg_replace( "^admin", "", $siteStrings[1] ) ); // sending in the number from the group name
+          // start to assemble the contents of an email
+          $resellers[$resellerId]['msg'] .= "SITE QUOTA WARNING - " . $siteStrings[0] . "\n\tQuota limit: " . $siteResult['quota'] . "MB\n\tQuota usage: "
+          . $siteResult['usagemb'] . "MB (". $siteResult['usage'] . "%)\n\tAvailable disk space: " . $siteResult['available'] . "MB\n\n";
+        }
+      }
+    }
+  }
+
+  // now check individual user quotas
+  $siteUsers = getSiteUsers( $siteStrings[3], $siteStrings[0] );
+  // were there any users ither than the siteadmin?
+  if( $siteUsers != FALSE ) {
+    for( $ctr = 0; $ctr < count( $siteUsers ); $ctr++ ) {
+      $userResult = checkUserQuota( $siteUsers[$ctr]['uid'] );
+      if( $userResult['quota_enabled'] ) {
+        // check how much quota is used
+        $usage = $userResult['usage'];
+        // convert to a float for checking purposes
+        settype( $usage, 'float' );
+        if( $usage > $warningTrigger ) { // append to the warning message if this percentage is used (90% should be a good figure)
+          // are we logging alerts?
+          if( $alertLog ) {
+            // see if this site is in the log for today, with a quota <= the current one
+            if( !$userAlerted = isInLog( $doy, $tstmp, $siteUsers[$ctr]['user'] . "@" . $siteStrings[0], $userResult['quota'] ) ) {
+              // write them to the log and display/send alert
+              addToLog( $doy, $tstmp, $siteUsers[$ctr]['user'] . "@" . $siteStrings[0], $userResult['quota'] );
+              // set our flag so that we know to issue a warning - as long as $siteOnly is FALSE
+              if( $siteOnly == FALSE ) {
+	              $quotaWarnings = TRUE;
+	            }
+              // if we are not in siteOnly mode, append the info to the warning message
+              if( $siteOnly == FALSE ) {
+	              $warningMsg .= "USER QUOTA WARNING - " . $siteUsers[$ctr]['user'] . "@" . $siteStrings[0] . "\n\tQuota limit: "
+  	            . $userResult['quota'] . "MB\n\t" . "Quota usage: " . $userResult['usagemb'] . "MB (" . $userResult['usage']
+  	            . "%)\n\tAvailable disk space: " . $userResult['available'] . "MB\n\n";
+  	          }
+              // are we notifying users?
+              if( $notifyOffenders ) {
+                // notify the user if they are over the trigger
+                mailOffender( 'user', $siteUsers[$ctr]['user'], $siteStrings[0], $userResult['quota'], $userResult['usagemb'], $userResult['usage'], $userResult['available'], $userResult['availablepc'] );
+              }
+              if( $notifyResellers && $siteOnly == FALSE ) {
+                // find the reseller for this site
+                $resellerId = getSiteReseller( ereg_replace( "^admin", "", $siteStrings[1] ) ); // sending in the number from the group name
+                // add the contents to the reseller email
+                $resellers[$resellerId]['msg'] .= "USER QUOTA WARNING - " . $siteUsers[$ctr]['user'] . "@" . $siteStrings[0] . "\n\tQuota limit: "
+                . $userResult['quota'] . "MB\n\t" . "Quota usage: " . $userResult['usagemb'] . "MB (" . $userResult['usage']
+                . "%)\n\tAvailable disk space: " . $userResult['available'] . "MB\n\n";
+              }
+            }
+            // the user was already in the log, we won't alert them again
+          }
+          else { // we aren't logging, just do the checks
+            // set our flag so that we know to issue a warning - as long as $siteOnly is FALSE
+            if( $siteOnly == FALSE ) {
+	            $quotaWarnings = TRUE;
+	          }
+            // append the info to the warning message
+            if( $siteOnly == FALSE ) {
+	            $warningMsg .= "USER QUOTA WARNING - " . $siteUsers[$ctr]['user'] . "@" . $siteStrings[0] . "\n\tQuota limit: "
+  	          . $userResult['quota'] . "MB\n\t" . "Quota usage: " . $userResult['usagemb'] . "MB (" . $userResult['usage']
+  	          . "%)\n\tAvailable disk space: " . $userResult['available'] . "MB\n\n";
+  	        }
+            // are we notifying users?
+            if( $notifyOffenders ) {
+              // notify the user if they are over the trigger
+              mailOffender( 'user', $siteUsers[$ctr]['user'], $siteStrings[0], $userResult['quota'], $userResult['usagemb'], $userResult['usage'], $userResult['available'], $userResult['availablepc'] );
+            }
+            if( $notifyResellers && $siteOnly == FALSE ) {
+              // find the reseller for this site
+              $resellerId = getSiteReseller( ereg_replace( "^admin", "", $siteStrings[1] ) ); // sending in the number from the group name
+              // start to assemble the contents of an email
+              $resellers[$resellerId]['msg'] .= "USER QUOTA WARNING - " . $siteUsers[$ctr]['user'] . "@" . $siteStrings[0] . "\n\tQuota limit: "
+              . $userResult['quota'] . "MB\n\t" . "Quota usage: " . $userResult['usagemb'] . "MB (" . $userResult['usage']
+              . "%)\n\tAvailable disk space: " . $userResult['available'] . "MB\n\n";
+            }
+          }
+        }
+      }
+    }
+  }
+
+} // end while loop
+
+// now display our results
+if( $quotaWarnings ) {
+  // notify resellers if needed
+  if( $notifyResellers ) {
+    while( list( $key0, $reseller ) = each( $resellers ) ) {
+      if( $reseller['msg'] != "" ) {
+        // this reseller has alerted domains
+        emailWarning( $reseller['mhead'] . $reseller['msg'], $reseller['email'] );
+      }
+    }
+  }
+  switch( $reportingMethod ) {
+    case( 'email' ):
+      if( isset( $qwError ) ) {
+        emailWarning( $warningMsg, $mailTo, $qwError );
+      }
+      else {
+        emailWarning( $warningMsg, $mailTo );
+      }
+      break;
+    case( 'stdout' ):
+      if( isset( $qwError ) ) {
+        displayWarning( $warningMsg, $qwError );
+      }
+      else {
+        displayWarning( $warningMsg );
+      }
+      break;
+    default:
+      if( isset( $qwError ) ) {
+        displayWarning( $warningMsg, $qwError );
+      }
+      else {
+        displayWarning( $warningMsg );
+      }
+      break;
+  }
+}
+
+/* ******************** *
+ * FUNCTION DEFINITIONS *
+ * ******************** */
+// function to get Reseller info - needs the server name and trugger value as args
+function getResellers( $server, $trigger ) {
+  // get the output of ListResellers into temp array
+  exec( "/usr/local/bin/ListResellers", $resellersTmp );
+  // has this server actually got any resellers?
+  if( count( $resellersTmp ) ) {
+    // $resellersTmp contains the following info:
+    // reseller,username=xxx,fullname=xxx,enabled=1,reseller_id=x,email=xxxx@xxx
+    while ( list ($key, $val) = each ($resellersTmp) ) {
+      $items = explode( ',', $val );
+      $id = ereg_replace( "^reseller_id=", "", $items[12] );                             // reseller_id is in $items[12]
+      $uname = ereg_replace( "^username=", "", $items[9] );                              // username is in $items[9]
+      $fname = ereg_replace( "^fullname=", "", stripslashes( $items[10] ) );             // fullname is in $itesm[10]
+      $email = ereg_replace( "^email=", "", ereg_replace( " telnet", "", $items[13] ) ); // email is in $items[13]
+
+      // add this reseller to our multi-d array
+      $resellers[$id]['uname'] = $uname;
+      $resellers[$id]['fname'] = $fname;
+      $resellers[$id]['email'] = $email;
+      // the following elements will be used for the alert email if necessary
+      $resellers[$id]['mhead'] = "The following site(s)/user(s) on $server are associated with your reseller account ($uname) and are at or over $trigger% of their disk quota:\n\n";
+      $resellers[$id]['msg'] = ""; // this will hold a list of offenders
+    }
+
+    return $resellers;
+  }
+  else {
+    // there aren't any resellers
+    return FALSE;
+  }
+}
+
+// function to get the reseller ID for a specific domain
+function getSiteReseller( $siteId ) {
+  $resellerId = exec( "/usr/bin/psql appldb -At -c \"select reseller_id from reseller where site_id=$siteId\"");
+
+  return $resellerId;
+}
+
+// function to find the Group ID number, when given a group name
+function findGID( $group ) {
+  // look in the server-level group file for this group and explode the returned string
+  $etcGroup = explode( ':', exec( "/bin/cat /etc/group | /bin/grep $group:" ) );
+
+  // etcGroup[2] contains the GID
+  return $etcGroup[2];
+}
+
+// function to get all the user info for a given domain - takes the site FST as an arg
+function getSiteUsers( $fst, $domain ) {
+  // we don't want the default users that Ensim creates:
+  $exclude = "^root$|^apache$|^mail$|^ensimrootmail$|^mysql$|^tomcat4$|^ftp$|^majordomo$";
+
+  // create an array containing all the lines of the relevant etc/passwd file
+  exec( '/bin/cat ' . $fst . '/etc/passwd', $users );
+
+  // start a counter
+  $ctr = 0;
+  while( list( $key, $val ) = each( $users ) ) {
+    // grab the user details
+    $userInfo = explode( ':', $val );
+    // userInfo array has our relevant details, start to assemble the array to return
+    // userInfo[0] => username, [2] => UID, [3] => GID, [4] => Full Name
+    if( !ereg( $exclude, $userInfo[0] ) && ( $userInfo[2] != $userInfo[3] ) ) {
+      // ignoring the excluded user names and the site admin (who uses the group quota only), add the user info
+      $siteUsers[$ctr]['user']   = $userInfo[0];
+      $siteUsers[$ctr]['uid']    = $userInfo[2];
+      $siteUsers[$ctr]['name']   = $userInfo[4];
+      $siteUsers[$ctr]['domain'] = $domain;
+      $ctr++;
+    }
+  }
+
+  // if there were more users than just the site admin, we will have added them all to $siteUsers
+  if( isset( $siteUsers ) ) {
+    return $siteUsers;
+  }
+  else { // there were no other users
+    return FALSE;
+  }
+}
+
+// function to check the quota for a specific site (group)
+function checkSiteQuota( $gid ) {
+  // use the quota_report command
+  exec( "/usr/local/bin/quota_report -d /home -g $gid", $siteQuota );
+  // what each siteQuota element means:
+  // [0] => a boolean result for if the group has quotas enabled
+  // [1] => the current disk usage in KB
+  // [3] => the quota limit in KB
+
+  // start to look at the quotas
+  switch( $siteQuota[0] ) {
+    case( "0:0" ):
+      // quotas are not enabled for this site
+      $result['quota_enabled'] = FALSE;
+      break;
+    case( "0:1" ):
+      // quotas are on for this site, check the quota
+      $result['quota_enabled'] = TRUE;
+      // check we don't try and divide by zero
+      if( $siteQuota[3] == 0 ) {
+        $result['quota'] = 0;
+        $result['usage'] = 0;
+        $result['usagemb' ] = round( ( $siteQuota[1] / 1024 ), 2 );
+        $result['available'] = 0;
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      else {
+        // find the percentage of the quota in use
+        $result['quota'] = round( $siteQuota[3] / 1024, 2 );
+        $result['usage'] = round( ( $siteQuota[1] / $siteQuota[3] ) * 100, 2 );
+        $result['usagemb' ] = round( ( $siteQuota[1] / 1024 ), 2 );
+        $result['available'] = round( ( $siteQuota[3] - $siteQuota[1] ) / 1024, 2 );
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      break;
+    case( "1:0" ):
+      // quotas are not enabled for this site
+      $result['quota_enabled'] = FALSE;
+      break;
+    case( "1:1" ):
+      // quotas are on for this site
+      $result['quota_enabled'] = TRUE;
+      // check we don't try and divide by zero
+      if( $siteQuota[3] == 0 ) {
+        $result['quota'] = 0;
+        $result['usage'] = 0;
+        $result['usagemb' ] = round( ( $siteQuota[1] / 1024 ), 2 );
+        $result['available'] = 0;
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      else {
+        // find the percentage of the quota in use
+        $result['quota'] = round( $siteQuota[3] / 1024, 2 );
+        $result['usage'] = round( ( $siteQuota[1] / $siteQuota[3] ) * 100, 2 );
+        $result['usagemb' ] = round( ( $siteQuota[1] / 1024 ), 2 );
+        $result['available'] = round( ( $siteQuota[3] - $siteQuota[1] ) / 1024, 2 );
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      break;
+  }
+
+  return $result;
+}
+
+// function to check individual user quotas. Takes an array of site users as its arg
+function checkUserQuota( $uid ) {
+  // we have been given a 2-dimensional array of users. Loop through it
+  // now check the quota
+  exec( "/usr/local/bin/quota_report -d /home -u " . $uid, $userQuota );
+
+  // what each userQuota element means:
+  // [0] => a boolean result for if the group has quotas enabled
+  // [1] => the current disk usage in KB
+  // [5] => the quota limit in KB
+  switch( $userQuota[0] ) {
+    case( "0:0" ):
+      // quotas are not enabled for this user
+      $result['quota_enabled'] = FALSE;
+      break;
+    case( "0:1" ):
+      // quotas are not enabled for this user
+      $result['quota_enabled'] = FALSE;
+      break;
+    case( "1:0" ):
+      // quotas are enabled for this user
+      $result['quota_enabled'] = TRUE;
+      // check we don't try and divide by zero
+      if( $userQuota[3] == 0 ) {
+        $result['quota'] = 0;
+        $result['usage'] = 0;
+        $result['usagemb'] = round( ( $userQuota[1] / 1024 ), 2 );
+        $result['available'] = 0;
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      else {
+        // find the percentage of the quota in use
+        $result['quota'] = round( $userQuota[3] / 1024, 2 );
+        $result['usage'] = round( ( $userQuota[1] / $userQuota[3] ) * 100, 2 );
+        $result['usagemb'] = round( ( $userQuota[1] / 1024 ), 2 );
+        $result['available'] = round( ( $userQuota[3] - $userQuota[1] ) / 1024, 2 );
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      break;
+    case( "1:1" ):
+      // quotas are enabled for this user
+      $result['quota_enabled'] = TRUE;
+      // check we don't try and divide by zero
+      if( $userQuota[3] == 0 ) {
+        $result['quota'] = 0;
+        $result['usage'] = 0;
+        $result['usagemb'] = round( ( $userQuota[1] / 1024 ), 2 );
+        $result['available'] = 0;
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      else {
+        // find the percentage of the quota in use
+        $result['quota'] = round( $userQuota[3] / 1024, 2 );
+        $result['usage'] = round( ( $userQuota[1] / $userQuota[3] ) * 100, 2 );
+        $result['usagemb'] = round( ( $userQuota[1] / 1024 ), 2 );
+        $result['available'] = round( ( $userQuota[3] - $userQuota[1] ) / 1024, 2 );
+        $result['availablepc'] = round( 100 - $result['usage'], 2 );
+      }
+      break;
+    }
+
+  return $result;
+}
+
+// function to read the logfile to find a specific user@domain entry
+// take the current day of the year, current timestamp and the disk quota during the last warning as args
+function isInLog( $doy, $tstmp, $userDom, $quota ) {
+	$inLogResult = FALSE;  // set a flag to see if this alert is in the log
+	
+  if( file_exists( ALERT_LOG ) ) {
+    $fp = fopen( ALERT_LOG, 'r' )
+      or die( 'Error QW496: Could not open' . ALERT_LOG . "\n" ); // change this to be non-fatal?
+    
+    // work through the file and look for previous alerts
+    while ( !feof( $fp ) ) {
+      $buffer = fgets( $fp );
+      // get rid of newlines etc
+      $buffer = trim( $buffer );
+      // if our buffer contains info (e.g.has '|' in it), start to parse it
+      if( ereg( "\|", $buffer ) ) {
+	      // strip out the separators
+  	    $sections = explode( "|", $buffer );
+  	    // $sections => [0] = day of year, [1] = seconds since epoch, [2] = user@domain, [3] = quota when triggered
+  	    if( $userDom == $sections[2] ) {
+  	      // we've found this user
+  	      if( $sections[0] != $doy && $sections[1] < $tstmp ) {
+  	        // if the day is not today and the timestamp is older than ours, this record is old, so not a valid log
+  	        $inLogResult = FALSE;
+  	      }
+  	      else {
+  	        // the user has been notified already today, check if the quota has been increased since notification
+  	        if( $sections[3] < $quota ) {
+  	          // we've already increased the quota once today, alert again
+  	          $inLogResult = FALSE;
+  	        }
+  	        else {
+  	          // they are in the log as being alerted today and the disk quota is unchanged
+  	          $inLogResult = TRUE;
+  	        }
+  	      }
+  	    }
+  		}
+    }
+    fclose( $fp );
+    
+    return $inLogResult;
+  }
+  else {
+    // couldn't find the file - make the file ready for next time
+    // does the directory even exist?
+    global $conf;
+    if( is_dir( $conf['AlertLogPath'] ) ) {
+      if( touch( ALERT_LOG ) ) {
+        return FALSE; // if the file didn't exist, then the record wasn't in it!
+      }
+    }
+    else {
+      mkdir( $conf['AlertLogPath'] )
+        or die( 'Error QW555: Could not create ' . $conf['AlertLogPath'] . " directory\n" );
+      touch( ALERT_LOG )
+        or die( 'Error QW557: Could not create ' . ALERT_LOG . ' file\n' );
+      return FALSE;
+    }
+  }
+}
+
+// function to write user@domain to logfile
+function addToLog( $doy, $tstmp, $userDom, $quota ) {
+  static $filectr = 0;
+  // create the log entry string
+  $logEntry = "$doy|$tstmp|$userDom|$quota";
+  // make a tmp filename
+  $tmpFile = "/tmp/quotawatch.alerts.$tstmp-" . $filectr++;
+
+  // pull the logfile entries into an array
+  $current = file( ALERT_LOG );
+
+  // make a new array of log entries, not including this user or blank lines
+  while( list( $key, $line ) = each( $current ) ) {
+    trim( $line );
+    if( !ereg( $userDom, $line ) && $line != "\n" ) {
+      $new[$key] = $line;
+    }
+  }
+
+  // add the new entry for this user into the array
+  $new[$key++] = $logEntry;
+
+  // add the array into a temp file
+  $fp0 = fopen( $tmpFile, 'w' )
+    or die( "Error QW565: Could not open $tmpFile for writing\n" );
+  fclose( $fp0 );
+  while( list( $key, $line ) = each( $new ) ) {
+    trim( $line );
+    if( $line != "\n" ) {
+      // write the line to the file (easiest to just redirect bash echo)
+      exec( "/bin/echo \"$line\" >> $tmpFile" );
+    }
+  }
+
+  // overwrite log with temp file
+  exec( "/bin/mv $tmpFile " . ALERT_LOG );
+}
+
+// function to send warnings to individual offender
+function mailOffender( $userType, $user, $domain, $quota, $usagemb, $usage, $available, $availablepc ) {
+  // check that $type is only 'user' or 'siteadmin'
+  if( $userType != 'user' && $userType != 'siteadmin' ) {
+    return FALSE;
+  }
+  else {
+    // read the mail.type template
+    if( $msg = readMailFile( $userType ) ) {
+      // convert the special words in the mailfile message
+      for( $ctr = 0; $ctr < 3; $ctr++ ) {
+        $msg[$ctr] = str_replace( "--USER--", $user, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--DOMAIN--", $domain, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--QSIZE--", $quota, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--QUSAGEMB--", $usagemb, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--QUSAGEPC--", $usage, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--QAVAILMB--", $available, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--QAVAIL--", $available, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--QAVAILPC--", $availablepc, $msg[$ctr] );
+        $msg[$ctr] = str_replace( "--COMPANY--", COMPANY_NAME, $msg[$ctr] );
+      }
+
+      // create mail header if MAILFROM is set
+      if( $msg[2] != FALSE ) {
+        $headers = "From: " . $msg[2] . "\r\n";
+        $customHeader = TRUE;
+      }
+
+      // create subject from conf file
+      if( $msg[1] != FALSE ) {
+        $subject = $msg[1];
+      }
+      else {
+        $subject = "Disk Quota Warning";
+      }
+
+      if( $customHeader ) {
+        mail( $user . "@" . $domain, $subject, $msg[0], $headers );
+      }
+      else {
+        mail( $user . "@" . $domain, $subject, $msg[0] );
+      }
+    }
+    else {
+      // looks like we couldn't read the mailfile
+      return FALSE;
+    }
+  }
+}
+
+// function to create the mail message from the mailfiles
+function readMailFile( $type ) {
+  // start an empty msg var
+  $mailfile = '';
+  // [0] = the message, [1] = subject, [2] = mailfrom
+  $mailcontent = array( '', FALSE, FALSE );
+
+  // assemble a message by pulling in the mail file
+  exec( "/bin/cat /etc/quotawatch/mail.$type", $lines, $result );
+
+  if( $result > 0 ) {
+    return FALSE;
+  }
+  else {
+    // pull out everything that isn't commented with #
+    while( list( $key0, $val0 ) = each( $lines ) ) {
+      if( !ereg( "^#", $val0 ) && !ereg( "^--SUBJECT", $val0 ) && !ereg( "^--MAILFROM", $val0 ) ) {
+        // we have ignored commented lines and config lines, check for mid-line comments
+        $pos = strpos( $val0, '#' );
+        if( !( $pos === FALSE ) ) {
+          list( $line, $comment ) = explode( '#', $val0 );
+          $mailcontent[0] .= $line . "\n";
+        }
+        else {
+          // create message from array lines
+          $mailcontent[0] .= $val0 . "\n";
+        }
+      }
+      else if( ereg( "^--SUBJECT", $val0 ) ) {
+        @list( $key, $val1 ) = explode( '=', $val0 );
+        $mailcontent[1] = $val1;
+      }
+      else if( ereg( "^--MAILFROM", $val0 ) ) {
+        @list( $key, $val1 ) = explode( '=', $val0 );
+        $mailcontent[2] = $val1;
+      }
+    }
+
+    // create an array of the mailfile
+    return $mailcontent;
+  }
+}
+
+// function to send the warning message to an email recipient
+function emailWarning( $msg, $to, $errors='' ) {
+  $msg = $msg . $errors;
+  mail( $to, "Disk Quota Warning", $msg )
+    or die( "Failed to send email to " . $to );
+}
+
+// function to display the warning on screen
+function displayWarning( $msg, $errors='' ) {
+  // just echo the message
+  $msg = $msg . $errors;
+  echo $msg;
+}
+?>

@@ -1,0 +1,381 @@
+#!/bin/bash
+# QUOTAWATCH INSTALLATION SCRIPT - tim@1steasy.com
+#+----------------------------------------------------------------------+
+#|                        installquotawatch                             |
+#+----------------------------------------------------------------------+
+#| 07/09/2004                                                           |
+#| Author: tim.littlemore@1steasy.com (send bug reports and/or questions|
+#| to quotawatch@1steasy.com)                                           |
+#+----------------------------------------------------------------------+
+#| Copyright 2004, Tim Littlemore                                       |
+#|                                                                      |
+#| This program is free software; you can redistribute it and/or modify |
+#| it under the terms of the GNU General Public License as published by |
+#| the Free Software Foundation; either version 2 of the License, or    |
+#| (at your option) any later version.                                  |
+#|                                                                      |
+#| This program is distributed in the hope that it will be useful, but  |
+#| WITHOUT ANY WARRANTY; without even the implied warranty of           |
+#| MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU     |
+#| General Public License for more details.                             |
+#| You should have received a copy of the GNU General Public License    |
+#| along with this program; if not, write to the                        |
+#| Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,  |
+#| MA, 02111-1307, USA                                                  |
+#+----------------------------------------------------------------------+
+VERSION="1.6.1"
+TEMPCRON="/tmp/quotawatch.cron"
+CRON_LOCATION="/etc/cron.hourly"
+INSTALL_PATH="/usr/local/sbin"
+CONFIG_PATH="/etc/quotawatch"
+ALERT_PATH="/var/lib/quotawatch"
+
+## FUNCTION DEFS
+INSTALL_SCRIPT() {
+  # INSTALL THE SCRIPT
+  mv ./quotawatch $INSTALL_PATH
+  chmod 755 $INSTALL_PATH/quotawatch
+  chown root:root $INSTALL_PATH/quotawatch
+}
+
+CRONJOB() {
+  if [ -z $1 ]
+  then
+    echo
+    echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+    echo
+    echo -n "Do you want to automatically run quotawatch every hour? [answer 'y' or 'n']: "
+    read CRON
+    CRONJOB $CRON
+  else
+    case $1 in
+	y)
+    INSTALL_SCRIPT
+    # START TO ASSEMBLE THE CRON SCRIPT
+    echo "#!/bin/bash" > $TEMPCRON
+    echo "# run the quotawatch program" >> $TEMPCRON
+    # ASK FOR TRIGGER VALUE
+    CUSTOMTRIG
+    # ASK IF THEY WANT TO ENABLE USER NOTIFICATIONS
+    NOTIFICATION
+    # ASK IF THEY WANT TO ENABLE RESELLER NOTIFICATION
+    RNOTIFICATION
+    # ASK IF THEY WANT TO ENABLE LOGGING
+    LOGGING
+    # ASK IF THEY WANT A SITE-ONLY SETUP
+    SITEONLY
+    # ASK FOR THE EMAIL ADDRESS(ES) TO SEND ALERTS TO
+    EMAILS
+	;;
+	n)
+	  # JUST INSTALL
+	  echo "Installing without hourly cron script..."
+    INSTALL_SCRIPT
+	;;
+	*)
+      echo
+      echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+      echo
+      echo -n "Do you want to automatically run quotawatch every hour? [answer 'y' or 'n']: "
+      read CRON
+      CRONJOB $CRON
+    ;;
+ 	esac
+  fi
+}
+
+CUSTOMTRIG() {
+  echo
+  echo "Quotawatch triggers an alert when disk usage is at or over 90% of quota by default."
+  echo "Would you like to specify a different (custom) value to trigger alerts?"
+  echo -n "[Enter a value between 0 - 100 or just press ENTER to use the default trigger]: "
+  read TRIGGER
+  if [ -z $TRIGGER ]
+    then
+    ## they have pressed enter
+	echo "Using default 90% usage trigger..."
+	echo -n "$INSTALL_PATH/quotawatch " >> $TEMPCRON
+  else
+    ## check the trigger
+	if ! echo $TRIGGER | egrep '^[0-9]+$' > /dev/null
+	  then
+            echo
+            echo "*** YOU MUST ENTER AN INTEGER VALUE BETWEEN 0 AND 100! ***"
+	    CUSTOMTRIG
+	elif [ "$TRIGGER" -lt 0 ] || [ "$TRIGGER" -gt 100 ]
+	  then
+	    echo
+            echo "*** YOU MUST ENTER AN INTEGER VALUE BETWEEN 0 AND 100! ***"
+	    CUSTOMTRIG
+	elif [ "$TRIGGER" -eq 0 ]
+	  then
+	    echo
+	    echo "*** YOU HAVE ENTERED A TRIGGER VALUE OF 0% - QUOTAWATCH WILL END UP EMAILING ***"
+	    echo "*** YOU WITH A LIST OF ALL SITES AND USERS ON THE SERVER EVERY HOUR!         ***"
+	    echo
+	    echo "This installation script will not let that happen, but you can always edit the"
+	    echo "/etc/cron.hourly/quotawatch.cron script to achieve such annoying behaviour after installation."
+	    CUSTOMTRIG
+	else
+          echo -n "$INSTALL_PATH/quotawatch --trigger $TRIGGER " >> $TEMPCRON
+	fi
+  fi
+}
+
+NOTIFICATION() {
+  echo
+  echo "Quotawatch can notify users and site administrators when they have triggered"
+  echo "a disk quota alert."
+  echo -n "Do you want to enable user notification in your hourly quotawatch run? [answer 'y' or 'n']: "
+  read NOTIFY_ON
+  if [ -z $NOTIFY_ON ]
+    then
+      echo
+      echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+      echo
+      NOTIFICATION
+    else
+      case $NOTIFY_ON in
+        y)
+          # add --notify to cron
+          echo -n "--notify " >> $TEMPCRON
+          # ask for company name
+          echo -n "Please enter your hosting company name (to be displayed on notification emails): "
+          read HCNAME
+          sed s/"CompanyName = Hosting Company"/"CompanyName = $HCNAME"/g quotawatch.conf > quotawatch.conf.1
+          mv -f quotawatch.conf.1 quotawatch.conf
+        ;;
+        n)
+          # just continue
+          echo
+        ;;
+        *)
+          echo
+          echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+          echo
+          NOTIFICATION
+        ;;
+      esac
+  fi
+}
+
+RNOTIFICATION() {
+  echo
+  echo "Quotawatch can notify resellers when their associated sites/users have triggered"
+  echo "a disk quota alert."
+  echo -n "Do you want to enable reseller notification in your hourly quotawatch run? [answer 'y' or 'n']: "
+  read RNOTIFY_ON
+  if [ -z $RNOTIFY_ON ]
+    then
+      echo
+      echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+      echo
+      RNOTIFICATION
+    else
+      case $RNOTIFY_ON in
+        y)
+          # add --reseller to cron
+          echo -n "--reseller " >> $TEMPCRON
+          # ask for company name
+        ;;
+        n)
+          # just continue
+          echo
+        ;;
+        *)
+          echo
+          echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+          echo
+          RNOTIFICATION
+        ;;
+      esac
+  fi
+}
+
+LOGGING() {
+  echo
+  echo "You can enable logging in your cron script to stop alerts being sent more than once per day"
+  echo "for each over-quota account. Without this option, you will be notified every hour for an "
+  echo "over-quota alert that remains unfixed."
+  echo -n "Do you wish to enable alert-logging in your hourly quotawatch run? [answer 'y' or 'n']: "
+  read LOGGING_ON
+  if [ -z $LOGGING_ON ]
+    then
+      echo
+      echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+      echo
+      LOGGING
+    else
+      case $LOGGING_ON in
+        y)
+          # add --notify to cron
+          echo -n "--log " >> $TEMPCRON
+        ;;
+        n)
+          # just continue
+          echo
+        ;;
+        *)
+          echo
+          echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+          echo
+          LOGGING
+        ;;
+      esac
+  fi
+}
+
+SITEONLY() {
+	echo
+	echo "You can make quotawatch only notify you of site quota alerts and ignore user quota alerts."
+	echo "This is preferable if you host lots of domains, as the site quotas are often the only ones"
+	echo "which may require action to avoid problems."
+	echo "If user notification is enabled, the user will still be notified, but the server admin and"
+	echo "resellers will not."
+	echo -n "Do you wish to ignore user quota alerts? [answer 'y' or 'n']: "
+	read SO_ON
+	if [ -z $SO_ON ]
+    then
+      echo
+      echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+      echo
+      SITEONLY
+    else
+      case $SO_ON in
+        y)
+          # add --site-only to cron
+          echo -n "--site-only " >> $TEMPCRON
+        ;;
+        n)
+          # just continue
+          echo
+        ;;
+        *)
+          echo
+          echo "*** YOU MUST ANSWER 'y' OR 'n' (yes or no)! ***"
+          echo
+          SO_ON
+        ;;
+      esac
+  fi
+}
+
+EMAILS() {
+  echo
+  echo "You can provide one or more email addresses for quotawatch to send alert results to."
+  echo "If you are providing more than one email address, separate each one with a comma."
+  echo -n "Please type the address(es) and press enter [default root@localhost]: "
+  read EMAILADDR
+  if [ -z "$EMAILADDR" ]
+    then
+      echo -n "root@localhost" >> $TEMPCRON
+      mv $TEMPCRON $CRON_LOCATION
+      chmod 755 $CRON_LOCATION/quotawatch.cron
+      chown root:root $CRON_LOCATION/quotawatch.cron
+  elif ! echo $EMAILADDR | egrep '@' > /dev/null
+    then
+      echo
+      echo "*** IT APPEARS YOU PROVIDED AN INVALID EMAIL ADDRESS! ***"
+      echo "Note: if you keep seeing this error, just press ENTER to use the default root@localhost"
+      echo "then you can edit the /etc/cron.hourly/quotawatch.cron manually after installation"
+      EMAILS
+  else
+    echo -n "$EMAILADDR" >> $TEMPCRON
+    mv $TEMPCRON $CRON_LOCATION
+    chmod 755 $CRON_LOCATION/quotawatch.cron
+    chown root:root $CRON_LOCATION/quotawatch.cron
+  fi
+}
+
+INSTALL_CONFIGS() {
+  # install config files
+  if [ -d $CONFIG_PATH ]
+    then # leave originals in place with this version
+      PREV_CONF=1
+      mv quotawatch.conf $CONFIG_PATH/quotawatch.conf.$VERSION
+      mv mail.siteadmin $CONFIG_PATH/mail.siteadmin.$VERSION
+      mv mail.user $CONFIG_PATH/mail.user.$VERSION
+      chmod 644 $CONFIG_PATH/*
+      chown root:root $CONFIG_PATH/*
+    else
+      PREV_CONF=0
+      mkdir $CONFIG_PATH
+      mv mail.* quotawatch.conf $CONFIG_PATH
+      chmod 644 $CONFIG_PATH/*
+      chown root:root $CONFIG_PATH/*
+  fi
+  # check that the /var/lib/quotawatch path exists
+  if [ -d $ALERT_PATH ]
+    then
+      chown root:root $ALERT_PATH
+      chmod 700 $ALERT_PATH
+    else
+      mkdir $ALERT_PATH
+      chown root:root $ALERT_PATH
+      chmod 700 $ALERT_PATH
+  fi
+  MAN_PATH="/usr/share/man"
+  # install the man pages
+  mv quotawatch.5.gz $MAN_PATH/man5/
+  mv quotawatch.8.gz $MAN_PATH/man8/
+
+  return $PREV_CONF
+}
+
+
+## MAIN
+# ASK IF THE SCRIPT IS TO BE RUN FROM CRON
+echo
+USER=$(whoami)
+case $USER in
+  root)
+    echo "QUOTAWATCH Installation Script."
+    echo
+    echo "This software is licensed under the GPL. It is freely distributable and comes with ABSOLUTELY NO WARRANTY."
+    echo "For full details, read the GPL."
+    echo "Type 'g' and press ENTER to read it now, or just press ENTER to skip this and install quotawatch."
+    read GPL
+    case $GPL in
+      g)
+        less GPL
+        echo "Continuing installation..."
+        ;;
+      *)
+        ;;
+    esac
+    if [ -f /etc/cron.hourly/quotawatch.cron ]
+      then # don't ask the cron details, use existing
+        echo "Found existing cron file, using those settings..."
+        INSTALL_SCRIPT
+        INSTALL_CONFIGS
+      else
+        echo -n "Do you want to automatically run quotawatch every hour? [answer 'y' or 'n']: "
+        read CRON
+        CRONJOB $CRON
+        INSTALL_CONFIGS
+    fi
+    case $? in
+    0)
+      UPGRADE_MESSAGE="\n"
+      ;;
+    1)
+      UPGRADE_MESSAGE="\E[1;31mUPGRADE INFORMATION:\033[0m\nConfiguration and mail files from a previous version of quotawatch were found and used.\nThe new config files have been saved in $CONFIG_PATH with a .$VERSION extension.\nPlease read the UPGRADE file for instructions on how to use these files or implement new features."
+      ;;
+    esac
+    echo
+    echo -en "\E[1;32mINSTALLATION COMPLETE"
+    tput sgr0
+    echo " - quotawatch installed to $INSTALL_PATH"
+    echo "Editable config files and email templates are located in $CONFIG_PATH"
+    echo "If you have enabled user notification, you should read and edit the"
+    echo "$CONFIG_PATH/quotawatch.conf, $CONFIG_PATH/mail.siteadmin and $CONFIG_PATH/mail.user"
+    echo "files with relevant details."
+    echo
+    echo -e $UPGRADE_MESSAGE
+    ;;
+  *)
+  echo "You need to be root to run this installation script. Exiting..."
+  echo
+  exit 1
+  ;;
+esac
